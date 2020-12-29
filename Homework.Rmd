@@ -1,0 +1,191 @@
+---
+title: "402 Homework"
+author: "Dustin Oakes"
+date: "12/6/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading Data
+
+```{r}
+data <- read.csv("402DATA.csv", header = FALSE)
+colnames(data) <- "Rate"
+data <- ts(data)
+```
+
+# Plotting Time Series
+
+```{r}
+plot(data)
+title(main = "Figure 1")
+```
+
+The data appears to be staitionairy based on the plot, as the volatilty is relatively constant over time and mean reversion is present. However there is increased downwards volatility towards the middle of the plot so that might throw it off somewhat. 
+
+# Estimating AR(1) Model
+
+```{r}
+library(forecast)
+trainingset <- data[1:150]
+trainingset <- ts(trainingset)
+ar1 <- Arima(trainingset, order = c(1,0,0))
+ar1
+```
+
+```{r}
+library(lmtest)
+coeftest(ar1, type = "HC1")
+```
+
+The AR(1) Model estimates an intercept of 0.821 and a beta of 0.829. The standard error of the intercept is 0.99 and 0.04 for the beta term. The beta is significant at the 5% level, but the intercept is not.
+
+# Predicting and Updating AR(1) Model
+
+```{r}
+testset <- data[151:200]
+testset <- ts(testset)
+
+newfit <- Arima(c(trainingset,testset), model=ar1)
+onestep.pred <- fitted(newfit)[151:200]
+onestep.pred
+```
+
+```{r}
+library(Metrics)
+rmse(testset, onestep.pred)
+```
+
+# Estimating AR(2) Model
+
+```{r}
+ar2 <- Arima(trainingset, order = c(2,0,0))
+ar2
+```
+
+
+```{r}
+coeftest(ar2, type = "HC1")
+```
+
+The AR(2) model gives an intercept of 0.81, a one-period lag coefficient of 0.85 and a two-period lag coefficient of -0.03. The standard error of the intercept is 0.96, and about 0.08 for each lag coefficient. Only the one-period coefficient was deemed to be significant at any level. 
+
+# Predicting and Updating AR(2) Model
+
+```{r}
+newfit_2 <- Arima(c(trainingset,testset), model=ar2)
+onestep.pred_2 <- fitted(newfit_2)[151:200]
+onestep.pred_2
+```
+
+```{r}
+rmse(testset, onestep.pred_2)
+```
+
+```{r}
+cat("AR(1) Model RMSE:",rmse(testset, onestep.pred))
+cat("\n")
+cat("AR(2) Model RMSE:",rmse(testset, onestep.pred_2))
+```
+
+The AR(1) Model predicted the data slightly better when measured by the RMSE. This is likely due to the fact that the second coefficient of the AR(2) model was not significant at any level; it did not have much prediction power, and threw off the one-period lag component.
+
+# Plotting Predictions
+
+```{r}
+plot(data)
+title(main = "Figure 2")
+lines(x=151:200, y=onestep.pred, col="red")
+lines(x=151:200, y=onestep.pred_2, col="blue")
+```
+
+# Importing FRED Data
+
+```{r}
+GDP <- read.csv("GDPC1.csv")
+```
+
+# Transforming Series
+
+```{r}
+logGDP <- log(GDP[,2])
+GDP$GDPC1 <- logGDP
+GDPunivar <- GDP[,2]
+```
+
+# Plotting Series
+
+```{r}
+plot(logGDP, type="l", lty=2)
+title(main = "Figure 3")
+```
+
+# Differencing Data
+
+```{r}
+ytdiff <- diff(logGDP, lag = 1)
+```
+
+# Estimating AR Model
+
+```{r}
+trainingset_GDP <- ytdiff[1:248]
+trainingset_GDP <- ts(trainingset_GDP)
+
+gdp.arima <- auto.arima(trainingset_GDP)
+coeftest(gdp.arima, type = "HC1")
+```
+
+Using the auto.arima algorithm determined that an AR(2) model had the lowest AIC, BIC, etc.
+
+# Predicting 2012-2020 Data
+
+```{r}
+testset_GDP <- ytdiff[249:280]
+testset_GDP <- ts(testset_GDP)
+
+newfit <- Arima(c(trainingset_GDP,testset_GDP), model=gdp.arima)
+onestep.pred_GDP <- fitted(newfit)[249:280]
+onestep.pred_GDP
+```
+
+# Undifferencing Forecast
+
+```{r}
+testdata <- GDP$GDPC1[250:281]
+length <- 1:32
+
+
+predictions <- testdata + onestep.pred_GDP
+
+plot(logGDP, type="l", lty=2)
+title(main = "Figure 4")
+lines(x=250:281,y=predictions,col="red")
+```
+
+# Original Levels (Removing Log Transformation)
+
+```{r}
+GDP$GDPC1 <- exp(GDP[,2])
+predictions <- exp(predictions)
+```
+
+```{r}
+plot(GDP$GDPC1, type="l", lty=2)
+title(main = "Figure 5")
+lines(x=250:281,y=predictions,col="red")
+```
+
+# Calculating Error
+
+```{r}
+testdata <- exp(testdata)
+testdata
+predictions
+rmse(testdata, predictions)
+```
+
+The model performs well, with an RMSE of 128, which is not bad considering the scale that GDP is measured on.
