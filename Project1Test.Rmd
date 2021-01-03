@@ -1,0 +1,521 @@
+---
+title: "Project 1"
+author: "Dustin Oakes"
+date: "11/18/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Reverse Engineering the NFL Passer Rating Formula
+
+## Abstract
+
+The highest level of the sport of American Football is played in the National Football League (NFL). On each team, the player in the quarterback (QB) position is responsible for passing the ball down the field and handing the ball off to runners. Since quarterbacks touch the ball on virtually every offensive play, this position tends to command the highest salary of any player on a team. With front offices currently spending upwards of $45 million per year to sign the best quarterbacks to contracts, teams have a significant vested interest in ranking and rating players, so as to make sure the best ones are palying on their team. The NFL maintains an official statistic, Passer Rating, which measures the performance of quarterbacks using a combination of the statistics normally measured throughout a game. In this project, we will attempt to reverse engineer the NFL's formula for this statistic through a linear regression of the variables which are normally collected by the scorers throughout the course of a game.
+
+## Loading Data
+
+```{r}
+pass2009 <- read.csv("pass-2009.csv")
+pass2010 <- read.csv("pass-2010.csv")
+pass2011 <- read.csv("pass-2011.csv")
+pass2012 <- read.csv("pass-2012.csv")
+pass2013 <- read.csv("pass-2013.csv")
+pass2014 <- read.csv("pass-2014.csv")
+pass2015 <- read.csv("pass-2015.csv")
+pass2016 <- read.csv("pass-2016.csv")
+pass2017 <- read.csv("pass-2017.csv")
+pass2018_bad <- read.csv("pass-2018.csv")
+```
+
+The 2018 passing data did not have an index column, so to successfully combine the data we will add one:
+
+```{r}
+Rk <- c(1:106)
+pass2018 <- cbind(Rk,pass2018_bad)
+```
+
+Now we will concatenate all the data into one set, which will give us 10 years worth of Passer Ratings as well as all the associated statistics which were presumably used to create the ratings:
+
+```{r}
+passdata <- rbind(pass2009,pass2010,pass2011,pass2012,
+                  pass2013,pass2014,pass2015,pass2016,
+                  pass2017,pass2018)
+```
+
+Many of the entries in our newly minted data set unfortunately will not be very useful in our analysis. Many teams run so-called "trick plays" in which another player than the QB will receive the ball and pass it, in an attempt to catch the defense off guard. However, this results in many non-QB players being included in the data, which results in many NAs throughout the data set.   
+   
+   Removing the NAs:
+
+```{r}
+napassdata <- na.omit((passdata))
+
+attach(napassdata)
+```
+
+## Boruta Variable Selection
+
+Running the Boruta Algorithm to determine important and unimportant vairables to include in our regression:
+
+```{r}
+boruta <- Boruta::Boruta(Rate ~ ., data=napassdata, doTrace=0, maxRuns=1000)
+print(boruta)
+plot(boruta, las=2, cex.axis = 0.7)
+```
+
+Based on using the Boruta Algorithm, the top 10 predictors include:   
+   
+  AY.A  (Adjusted Yards/Pass Attempts)   
+  ANY.A (Adjusted Net Yards/Pass Attempts)   
+  Cmp.  (Completion Percentage)   
+  TD.   (Touchdown Percentage)   
+  Int.  (Interception Percentage)   
+  Y.A   (Yards/Pass Attempts)   
+  NY.A  (Net Yards/Pass Attempts)   
+  Yds   (Yards)   
+  TD    (Touchdowns)   
+  Int   (Interceptions)   
+  Y.G   (Yards/Games)   
+  
+  *Note: QBR is another ranking/rating statistic developed by sports journalists, we will not be using it to predict rating, as it is not a statistic that the official scorers tabulate.
+  
+## Mallows Cp Variable Selection
+
+Defining Mallows Cp and Step functions:
+
+```{r}
+mallows_cp = function(model1, model2){
+  n = nrow(model1$model)
+  p1 = length(coef(model1))
+  p2 = length(coef(model2))
+  if(p2<p1) 
+    stop('You have interchanged the full model and the subset model', call. = FALSE)
+  sum(resid(model1)**2) / sum(resid(model2)^2) *(n-p2) + 2 * p1 -n
+}
+
+mystep = function(object){
+  reduced_object = object
+  old_mcp = mallows_cp(object, object)
+  while(TRUE){
+    nms = attr(terms(reduced_object),"term.labels")
+    u = lapply(nms, function(x) update(reduced_object, paste0(".~ .-", x)))
+    mcp = sapply(u, mallows_cp, object) # same as sapply(u, function(x) mallows_cp(x, object))
+    if(min(mcp) > old_mcp) break
+    old_mcp = min(mcp)
+    reduced_object = u[[which.min(mcp)]]
+  }
+  reduced_object
+}
+```
+
+Using the defined functions to do a backwards stepwise regression, returning the result with the lowest Cp value:
+
+```{r}
+model_all <- lm (Rate ~ . - Rk - Player - Tm - Age
+                 - Pos - G - GS - QBrec - QBR, data=napassdata)
+mallows_all <- mystep(model_all)
+summary(mallows_all)
+```
+
+Based on using Mallows Cp, the top 10 predictors include:   
+   
+  **Cmp. (Completion Percentage)**   
+  Yds (Yards)   
+  **TD (Touchdowns)**   
+  **TD. (Touchdown Percentage)**   
+  **Int (Interceptions)**   
+  **Int. (Interception Percentage)**   
+  **AY.A (Adjusted Yards/Pass Attempts)**   
+  Y.C (Yards/Completion)   
+  **NY.A (Net Yards/Pass Attempts)**   
+  **ANY.A (Adjusted Net Yards/Pass Attempts)**   
+  
+  **BOLD** = Also Important in Boruta Model
+  
+## Final Variable Selection
+
+Based on the variable selection criteria of Mallows Cp and the Boruta Algorithm, a few variables stand out as being particularly important to our regression. Clearly, yardage, touchdowns, completions, and interceptions are the fundamental stats that contribute to Passer Rating. Let us simply use the advice of our algorithms and select the variables that both methods consider important to the regression. From here on, we will be considering the following:   
+
+Cmp. (Completion Percentage)   
+TD (Touchdowns)   
+TD. (Touchdown Percentage)   
+Int (Interceptions)   
+Int. (Interception Percentage)   
+AY.A (Adjusted Yards/Pass Attempts)   
+NY.A (Net Yards/Pass Attempts)   
+ANY.A (Adjusted Net Yards/Pass Attempts)   
+   
+   
+## Descriptive Analysis
+
+### Histograms and Density Plots
+
+```{r}
+hist(Cmp., breaks = "FD", freq = FALSE)
+lines(density(Cmp.),lwd = 2, col ="indianred2")
+rug(Cmp.)
+```
+
+Between 2009 and 2018, NFL quarterbacks averaged around 60%-70% in Completion Percentage, which is the ratio of pass completions to pass attempts. The data is well distributed, however there is an outlier that could be attended to. In addition, the data seem more skewed to the right side, with fewer points in the 50%-60% range then in the 60%-70% range.
+
+```{r}
+hist(TD, breaks = "FD", freq = FALSE)
+lines(density(TD),lwd = 2, col ="indianred2")
+rug(TD)
+```
+
+This data is very positively skewed, as naturally it is easier to score fewer touchdowns than to score large amounts. Touchdowns score 6 points for a team; they are the main way that points are accumulated and games are won. Quarterbacks might average around 20-25 touchdowns in a 16 game season. Scoring 40-50+ TDs in a season would be regarded as historic performances by the best players of all time.
+
+```{r}
+hist(TD., breaks = "FD", freq = FALSE)
+lines(density(TD.),lwd = 2, col ="indianred2")
+rug(TD.)
+```
+
+With the removal of some outliers, this data looks very normally distributed. NFL QBs generally score a touchdown on 2%-10% of every pass they attempt.
+
+```{r}
+hist(Int, breaks = "FD", freq = FALSE)
+lines(density(Int),lwd = 2, col ="indianred2")
+rug(Int)
+```
+
+Interceptions occur when the quarterback throws a pass and it is caught by a defensive player. These negatively impact a quarterback's performance, as interceptions end the team's offensive possession and any chance of scoring points. The best quarterbacks suffer very few (around 0-7) interceptions, as they are very careful with where they throw the ball, while worse players can turn the ball over 15-20+ times per season.
+
+```{r}
+hist(Int., breaks = "FD", freq = FALSE)
+lines(density(Int.),lwd = 2, col ="indianred2")
+rug(Int.)
+```
+
+Interception Percentage measures the ratio of every pass attempt that results in an interception. The data between 0%-5% is very nicely distributed, however some outliers skew the data a little bit.
+
+```{r}
+hist(AY.A, breaks = "FD", freq = FALSE)
+lines(density(AY.A),lwd = 2, col ="indianred2")
+rug(AY.A)
+```
+
+Adjusted Yards per Attempt is a statistic that measures how many yards are gained per pass attempt, and then 'adjusting' with a addition for touchdowns and a subtraction for interceptions. This gives a statistic which reveals more about a player's performance than simply measuring yards per attempt.
+
+```{r}
+hist(NY.A, breaks = "FD", freq = FALSE)
+lines(density(NY.A),lwd = 2, col ="indianred2")
+rug(NY.A)
+```
+
+Net Yards per Attempt is a similar statistic to Adjusted Yards per Attempt, but rather than adding TDs and INTs to the statistic, NY.A penalizes a quarterback for taking a sack, which occurs when the quarterback is tackled behind the line of scrimmage for a loss of yards.
+
+```{r}
+hist(ANY.A, breaks = "FD", freq = FALSE)
+lines(density(ANY.A),lwd = 2, col ="indianred2")
+rug(ANY.A)
+```
+
+As the name suggests, Adjusted Net Yards per Attempt is a combination of AY.A and NY.A, so it measures yards per attempt, accounting for touchdowns, interceptions, and sacks. Collinearity could become an issue of we try to include all these in our model, so we will keep an eye on that when building our model. Luckily, ANY.A seems to have the best distribution of all three variables, and it includes all the parameters we want for our regression.
+
+### Correlation Plot
+
+```{r}
+vars_select <- c("Rate","Cmp.","TD","TD.","Int",
+            "Int.","AY.A","NY.A","ANY.A")
+vars_select_data <- napassdata[vars_select]
+corrplot::corrplot(cor(vars_select_data))
+```
+
+As mentioned above, there is a pretty strong correlation between all the yards per attempt statistics, so we will likely remove all but one when building our model. Otherwise, there are no dark red or dark blue circles (strong correlations) between any of the other variables, so they should all be suitable for inclusion in our model.
+
+### Identifying Non-Linearity
+
+```{r}
+library(car)
+scatterplot(Cmp.,Rate)
+qqPlot(Cmp.)
+```
+
+Comparing Passer Rating and Completion Percentage we see a clear positive relationship between the variables. Those players with the lowest completion percentages likely only have such a low percentage because of a limited sample size of pass attempts; we could remove them from out data set so the data better follows a normal distribution. In addition, transforming the data might give us a more normal distribution.
+
+```{r}
+scatterplot(TD,Rate)
+qqPlot(TD)
+```
+
+Clearly, Passer Rating increases as the number of Touchdowns scored increases. This is no surprise, and a welcome conformation of how this variable should work in our model. On the quantile plot, it becomes clear that we might consider removing some players with 0 touchdowns, so as to better fit a normal distribution. Players with 0 touchdowns are not simply bad players, more likely they are backup players or often in other positions. Therefore we could exclude them from our model since we want to be evaluating quarterbacks who play the majority of the game.
+
+```{r}
+scatterplot(TD.,Rate)
+qqPlot(TD.)
+```
+
+The scatterplot and quantile plots of Touchdown Percentage reveal an outlier that desperately needs to be dealth with. Once that is taken care of, a clear linear relationship will be established and the distribution will be normalized. The player in question only has 2 pass attempts, so perhaps we should resrtict our sample to be just players with significant numbers of pass attempts.
+
+```{r}
+scatterplot(Int,Rate)
+qqPlot(Int)
+```
+
+There is not such a clear relationship between Interceptions and Passer Rating. Some players will get a lower rating even with less interceptions. One trend is very clear, though, that players with 15+ or 20+ interceptions will absolutely not garner a rating of over 100. The quantile plot shows that the number of interceptions for every player is normally distributed, especially if we remove some of the players with less pass attempts (playing time).
+
+```{r}
+scatterplot(Int.,Rate)
+qqPlot(Int.)
+```
+
+Generally, Passer Rating decreases as Interception Percentage increases, although there are a few outliers on every side of the data. Some players are still able to put up an above average rating even with more frequent interceptions, and vice versa some players garner a lower rating even though they turn over the ball often. The removal of these outliers will still leave the data somewhat outside of a normal distribution, so a transformation might be considered for this variable.
+
+```{r}
+scatterplot(ANY.A,Rate)
+qqPlot(ANY.A)
+```
+
+This relationship is strongly linear, however we will need to remove an outlier that is all the way on the right side of the graph. Without it, the best fit line and prediction interval would be much better. Upon further inspection, that data point was a backup player with only 2 pass attempts, so we will exclude him from our data analysis. The quantile plot shows that our data will be well-distributed upon the condition of removing those outliers.
+
+### Variable Transformations
+
+Our above analysis indicated that we would remove AY.A and NY.A from our analysis, and also that we could transform Completion Percentage and Interception Percentage to be better distributed. We want the data to follow a normal distribution so as to conform to the assumptions of the linear regression process. If the nature of the relationship between variables changed as x increases, then a linear coefficient will be less useful to make a prediction, as it will be less accurate on one side of the data.
+
+```{r}
+library(rcompanion)
+Cmp.trans <- transformTukey(Cmp.)
+scatterplot(Cmp.trans,Rate)
+qqPlot(Cmp.trans)
+```
+
+Using Tukey's Ladder of Powers suggests that taking Completion Percentage to the power of 3.9 would result in the most normally distributed data.
+
+```{r}
+Int.trans <- transformTukey(Int.)
+scatterplot(Int.trans,Rate)
+qqPlot(Int.trans)
+```
+
+Tukey's Ladder of Powers concludes that raising Interception Percentage to the 0.6 power would result in more normally distributed data. Removing some outliers would further improve our distribution.
+
+### Outliers
+
+As has been discussed previously, some players do not accrue many pass attempts because they are backup players or play mainly at another position. For example, one of the players is a kicker with two pass attempts, one of which was successful for 22 yards and a touchdown. This was surely a great play with a positive outcome, and therefore the player is assigned a high rating. However, since we are using linear regression, we do not want to include these fringe cases in our model, as we want our model to explain the performances of quarterbacks that play a lot of the time.   
+   
+   
+From here on out, we will only analyze data from players with more than 50 pass attempts:
+
+```{r}
+out_na_passdata <- subset(napassdata, Att >= 50)
+```
+
+Let's run a quick regression to check if there are any more outliers obvious:
+
+```{r}
+detach(napassdata)
+attach(out_na_passdata)
+Cmp.trans <- transformTukey(Cmp., plotit = FALSE, quiet = TRUE)
+Int.trans <- transformTukey(Int., plotit = FALSE, quiet = TRUE)
+outlier_model_test <- lm(Rate ~ Cmp.trans + TD + TD. 
+                         + Int + Int.trans + ANY.A,
+                         data = out_na_passdata)
+plot(outlier_model_test)
+```
+
+A quick look at the residual plots shows us that we could remove a few more outliers manually and improve the fit of our model. The outliers visible on the plots include:   
+Jimmy Garoppolo - a backup QB who started 2 games that season   
+Tom Savage - a backup QB who started 2 games that season   
+Matt Moore - a backup QB who started 2 games that season   
+Derek Anderson - a backup QB who started 7 games that season   
+
+```{r}
+removeoutliers <- out_na_passdata[-c(31,72,282,284,285), ]
+detach(out_na_passdata)
+attach(removeoutliers)
+Cmp.trans <- transformTukey(Cmp., plotit = FALSE, quiet = TRUE)
+Int.trans <- transformTukey(Int., plotit = FALSE, quiet = TRUE)
+outlier_model_test_b <- lm(Rate ~ Cmp.trans + TD + TD. 
+                         + Int + Int.trans + ANY.A,
+                         data = removeoutliers)
+plot(outlier_model_test_b)
+```
+
+By removing a few outliers manually, we've improved the residual plots while making sure we are being mindful of which particular players we are removing.
+
+### Imputing NAs
+
+Earlier, we discussed the removal of NAs in our original data set, and at this point we have no more to remove.
+
+## Model Building
+
+### Evaluating Variable Transformations
+
+The two variables we subjected to transformations include:   
+Completion Percentage   
+Interception Percentage   
+
+```{r}
+hist(Cmp.trans, breaks = "FD", freq = FALSE)
+lines(density(Cmp.trans),lwd = 2, col ="indianred2")
+rug(Cmp.trans)
+qqPlot(Cmp.trans)
+scatterplot(Cmp.trans,Rate)
+```
+
+After a power transformation, we see that Completion Percentage is nicely distributed around a mean, with no significant skew either way. The quantile plot shows that all the data fit approximately within a normal distribution, as is also seen on the density plot. The scatterplot shows a clear linear relationship between the transformed variable and the target variable.
+
+```{r}
+hist(Int.trans, breaks = "FD", freq = FALSE)
+lines(density(Int.trans),lwd = 2, col ="indianred2")
+rug(Int.trans)
+qqPlot(Int.trans)
+scatterplot(Int.trans,Rate)
+```
+
+When we create the same plots for the transformed version of Interception Percentage, we see similar results: a normal distribution and a clear linear relationship. In this case, higher interception % clearly leads to a lower rating. The quantile plot shows that the data does not fit the normal distribution quite as well as the other transformed variable, there are no more outliers we think are appropriate for removal.
+
+### Testing for Multicollinearity
+
+```{r}
+vif(outlier_model_test_b)
+```
+ 
+Calculating the Variance Inflation Factor reveals that none of our variables suffer from multicollinearity, using VIF<10 as a threshold. It appears Touchdowns (TD) and Adjusted Net Yards per Attempt (ANY.A) increase variance the most, but not so much that we will need to remove them.
+ 
+### Testing for Heteroskedasticity
+
+```{r}
+library(lmtest)
+bptest(outlier_model_test_b, data = removeoutliers)
+```
+
+Using the Breusch-Pagan Test to test for heteroskedasticity results in an very low p-value, indicating that there may be heteroskedasticity issues we need to resolve.    
+   
+      
+We will use weighted least squares to mitigate the heteroskedasticity problem:
+
+```{r}
+resi <- outlier_model_test_b$residuals
+varfunc.ols <- lm(log(resi^2) ~ Cmp.trans + TD + TD. 
+                         + Int + Int.trans + ANY.A, 
+                         data = removeoutliers)
+varfunc <- exp(varfunc.ols$fitted.values)
+model.gls <- lm(Rate ~ Cmp.trans + TD + TD. 
+                         + Int + Int.trans + ANY.A, 
+               weights = 1/sqrt(varfunc), data = removeoutliers)
+```
+
+### Testing for Misspecification
+
+
+```{r}
+resettest(Rate ~ Cmp.trans + TD + TD. + 
+                 Int + Int.trans + ANY.A,
+                 power = 2:3,
+                 type = "regressor",
+                 data = removeoutliers)
+```
+
+Running the RESET test results in a low p-value, indicating that there might be a better way to specify our model with terms to the 2nd and 3rd power. In addition, some of the variables now appear as insignificant when we run the linear regression, so we will try removing TD and Int as another way of improving the model specification.
+
+```{r}
+resettest(Rate ~ Cmp.trans + TD + TD. + 
+                 Int + Int.trans + ANY.A +
+                 Cmp.trans**2 + TD**2 + TD.**2 + 
+                 Int**2 + Int.trans**2 + ANY.A**2 +
+                 Cmp.trans**3 + TD**3 + TD.**3 + 
+                 Int**3 + Int.trans**3 + ANY.A**3,
+                 power = 2:3,
+                 type = "regressor",
+                 data = removeoutliers)
+```
+
+
+```{r}
+resettest(Rate ~ Cmp.trans + TD. + 
+                 Int.trans + ANY.A,
+                 power = 2:3,
+                 type = "regressor",
+                 data = removeoutliers)
+```
+
+Adding higher power terms to our model did not prove to be an effective way to better the specification, but removing some of the less significant variables did improve the specification somewhat.
+
+### AIC/BIC Comparison
+
+To have a second model to use in our AIC/BIC comparison, let us create a new model by removing the same terms as we did in the RESET test above. When we narrowed down our data set and ran the new regression, TD and Int seemed to be less significant than the other variables.
+
+```{r}
+new_model <- lm(Rate ~ ANY.A + Cmp.trans + 
+                      TD. + Int.trans, data=removeoutliers)
+
+cat('AIC_outlier_model:', AIC(outlier_model_test_b), '\t AIC_new_model:', AIC(new_model, k = 2))
+cat('\n')
+cat('BIC_outlier_model:', BIC(outlier_model_test_b), '\t BIC_new_model:', AIC(new_model, k = 2))
+```
+
+Using the Akaike and Bayesian Information Criterion, we conclude that our original model was better, since both the AIC and BIC are lower for the model in which we do not omit the variables TD and Int.
+
+### Checking Residual Plots
+
+Since we decided to use our original model after the AIC/BIC comparision, let us examine the residual plots and Cook's distance plots for this model:
+
+```{r}
+plot(outlier_model_test_b)
+```
+
+The residuals plot shows that errors are scattered across the board; the model best predicts Passer Rating when the rating is around 85-95, but the residuals go up to 5 and down to -10 across many of the fitted values. The Cook's distance plot shows a few outliers; however, upon examination of these data points, we think they should not be removed based on the fact that they are players with a significant amount of games. Removing them would lead to overspecification of the model, where we would end up only using data points that fit our model well to fit the model itself.
+
+### Bootstrapping
+
+```{r}
+library(boot)
+boot_model <- Boot(outlier_model_test_b, R=999)
+summary(boot_model)
+hist(boot_model)
+```
+
+Looking at the bootstrap results, it appears our model holds up well to resampling and regression on the newly created sample. None of the histograms seem to differ at all from what we have seen above.
+
+### Cross-Validation
+
+```{r}
+library(caret)
+train.control <- trainControl(method="cv", number=5, savePredictions = TRUE, returnResamp = 'all')
+cvmodel <- train(Rate ~ Cmp + TD + TD. + 
+                 Int + Int. + ANY.A, data=removeoutliers,                   method = "lm", trControl = train.control)
+print(cvmodel)
+```
+
+In a 5-Fold Cross Validation test, it appears that the model still performs well in this version of a resampling regression. The R-squared value of 0.95 is very close to 0.97 achieved in the original regression.
+
+### Training and Testing
+
+```{r}
+n = nrow(removeoutliers)
+train_index = sample(n, floor(0.8 * n))
+train_data1 = removeoutliers[train_index, ]
+test_data1 = removeoutliers[-train_index, ]
+
+predictions <- predict(cvmodel,test_data1)
+
+RMSE = RMSE(predictions, test_data1$Rate)
+MAE = MAE(predictions, test_data1$Rate)
+R2 = R2(predictions, test_data1$Rate)
+cat('RMSE:', RMSE)
+cat("\n")
+cat('\t MAE:', MAE)
+cat("\n")
+cat('\t R2:', R2)
+cat("\n")
+avg_err_rate = RMSE(predictions, test_data1$Rate)/mean(test_data1$Rate)
+cat('\t Average Error Rate:', avg_err_rate)
+```
+
+When we split our data into testing and training sets, we see similar results as in the cross validation test. The R-squared values are the same for both model evaluation methods. The RMSE is close to what it was in the cross validation, and the MAE is as well.
+
+## Model Interpretation
+
+```{r}
+final_model <- outlier_model_test_b
+summary(final_model)
+plot(final_model)
+```
+
+In our final proposed model, all the selected variables are statistically significant to the highest criterion, and the residual standard error is 1.976. Given that Passer Rating is measured on a 0-158.3, an error of around 2 units is not so bad. The adjusted R-squared value of 0.9755 means that our model predicts about 97.5% of the variation in the Passer Rating data.   
+The model estimates that every additional touchdown scored by a quarterback increases Passer Rating by 0.15 units over a season, while increasing the ratio of Touchdowns to Attempts by 1% increases Passer Rating by 1.84 units. An interception takes away 0.35 units from a player's Passer Rating. This is a very interesting result because it perfectly reflects the actual formula that the NFL uses to measure Passer Rating. Touchdowns and Interceptions are naturally part of the calculation, but interceptions are weighted more, and negatively, while touchdowns garner a smaller, but positive score. It is nice to see the same trend in the value of our coefficients, where touchdowns contribute positively, but not as negatively as interceptions do. The transformed variables are somewhat hard to interpret given their respective power shifts. Finally, a player increasing their Adjusted Net Yards per Attempt provides the biggest swing to Passer Rating; for every yard added to the statistic, Passer Rating increases by a whole 4.75 units.
