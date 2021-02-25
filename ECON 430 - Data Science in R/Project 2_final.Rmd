@@ -1,0 +1,327 @@
+---
+title: "Project 2"
+author: "Dustin Oakes"
+date: "12/9/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error = TRUE)
+```
+
+# Loading Data
+
+```{r}
+# Reading the data from FRED into a format for R
+MFG.csv <- read.csv("IPGMFN.csv")
+PERMIT.csv <- read.csv("PERMITNSA.csv")
+```
+
+These data sets obtained from FRED include the Industrial Production: Manufacturing Index (IPGMFN) and New Private Housing Units Authorized by Building Permits (PERMITNSA) from January 1972 to October 2020. Our first thought is that an increase in manufacturing output will generally lead to more building materials purchases, hence an increase in Building Permits applied for and awarded. We will examine nearly 50 years of data to see if there is any meaningful trend we can find that relates changes in manufacturing to changes in the number of homes being built (or at the very least, being permitted).
+
+# 1. Time Series & ACF/PACF Plots
+
+```{r}
+# Loading a library to forecast
+library(forecast)
+# Creating time series objects for use in forecasting
+MFG.temp <- ts(MFG.csv, start = 1972, frequency = 12)
+PERMIT.temp <- ts(PERMIT.csv, start = 1972, frequency = 12)
+
+MFG.ts <- ts(MFG.temp[,2], start = 1972, frequency = 12)
+PERMIT.ts <- ts(PERMIT.temp[,2], start = 1972, frequency = 12)
+# Plotting the time series
+plot(MFG.ts)
+plot(PERMIT.ts)
+# Plotting the series, ACFs, and PACFs
+tsdisplay(MFG.ts)
+tsdisplay(PERMIT.ts)
+```
+
+On the Manufacturing Index PACF, we see three significant spikes, which might lead us to use an AR(3) model. The ACF of that series slowly trends towards zero. On the Building Permit ACF, we see a cyclical trending towards zero, and two large spikes on the PACF, although there are a few more, so we might consider anything from an AR(2) to an AR(5) process for that series.
+
+# 2. Fitting ARIMA
+
+```{r}
+# Fitting an ARIMA model automatically
+MFG.arima <- auto.arima(MFG.ts)
+PERMIT.arima <- auto.arima(PERMIT.ts)
+# Showing error results from our ARIMA models
+cat("Manufacturing:","\n")
+accuracy(MFG.arima)
+cat("Building Permits:","\n")
+accuracy(PERMIT.arima)
+```
+
+Using the auto.arima algorithm for our time series returned the above models, which both perform quite well. The Building Permits model has a quite substantial error component, a theme which we will see repeated later on.
+
+# 3. Fitting Trend, Season, Cycle
+
+```{r}
+# Creating a time sequence to predict a model on
+t<-seq(1972, 2021.83,length=length(MFG.ts))
+# Fitting our own ARIMA based on ACF/PACFs
+MFG.full_model <- Arima(MFG.ts,order=c(3,0,0),include.drift=TRUE, seasonal=list(order=c(1,0,1)))
+# Fitting our own ARIMA based on ACF/PACFs
+PERMIT.full_model <- Arima(PERMIT.ts,order=c(2,1,1),include.drift=TRUE ,seasonal=list(order=c(1,0,1)))
+# Calling error reuslts from our own fitted models
+cat("Manufacturing:","\n")
+accuracy(MFG.full_model)
+cat("Housing Permits:","\n")
+accuracy(PERMIT.full_model)
+```
+
+In fitting the season, cycle, and trend models, both series clearly had features of autoregressive (AR) and moving average (MA) processes, so we wanted to fit our own ARIMA model. For the Manufacturing Index model, we found that lower error were produced with an AR(3) process with a s-ARMA(1,1) modelling the seasonal component. Given the nature of the Building Permits series, it made sense to fit an ARMA(2,1) model with an s-ARMA(1,1) similar to the last series. For the Building Permit model, we found the best results were obtained with 1 integration, so we went ahead with an ARIMA(2,1,1) for the cyclical component of the permit model. 
+
+# 4. Residual Plots
+
+```{r}
+# Plotting the residuals against the fitted values
+plot(x=fitted(MFG.full_model), y=MFG.full_model$residuals)
+plot(x=fitted(PERMIT.full_model), y=PERMIT.full_model$residuals)
+```
+
+On the residual plots, we observe quite constant error variance across both models, with a couple obvious exceptions (more visible on the Manufacturing Index residual series), such as the 2008 financial crisis and the COVID-19 pandemic.
+
+
+# 5. Residual ACF/PACF
+
+```{r}
+# Plotting the residuals as a time series, ACF/PACF
+tsdisplay(MFG.full_model$residuals)
+tsdisplay(PERMIT.full_model$residuals)
+# Extending the lag horzion for ACF
+acf(MFG.full_model$residuals, lag=360)
+acf(PERMIT.full_model$residuals, lag=360)
+# Extending the lag horzion for PACF
+pacf(MFG.full_model$residuals, lag=360)
+pacf(PERMIT.full_model$residuals, lag=360)
+```
+
+For both models, we see spikes in the ACF of the residuals at lag 1, before all the rest of the lags fit nicely into the bands. THe PACF for both models fits mostly between the bands, however the Building Permit model PACF has a few positive and negative spikes outside the bands. The is most certainly created by the residual time series of the building permit model having much more variation than the other model.
+
+# 6. CUSUM
+
+```{r}
+#Loading a library for CUSUM/resresid
+library(strucchange)
+# Plotting Cumulative Sums
+plot(efp(MFG.full_model$res~1, type = "Rec-CUSUM"))
+plot(efp(PERMIT.full_model$res~1, type = "Rec-CUSUM"))
+```
+
+For both our models, the CUSUM plots show that the perform well across their time horizons.
+
+# 7. Recursive Residuals
+
+```{r}
+# Calculating and plotting recursive residuals
+recres.MFG=recresid(MFG.full_model$res~1)
+recres.PERMIT=recresid((PERMIT.full_model$res~1))
+plot(recres.MFG, pch=16,ylab="Recursive Residuals")
+plot(recres.PERMIT, pch=16,ylab="Recursive Residuals")
+```
+
+Our recursive residual plot shows that our Manufacturing Index model performs well, up until the COVID-19 pandemic where it loses essentially all its explanatory power. The plot for the Building Permits model shows residuals that are much more varied; however the behavior of the residuals is quite constant over time unlike the other series.
+
+# 8. Diagnostic Statistics
+
+```{r}
+# Calling diagnostics for our models, and AIC/BIC
+summary(MFG.full_model)
+summary(PERMIT.full_model)
+AIC(MFG.arima,PERMIT.arima,MFG.full_model,PERMIT.full_model)
+BIC(MFG.arima,PERMIT.arima,MFG.full_model,PERMIT.full_model)
+```
+
+The season, cycle, trend model for Manufacturing Index fits quite well, with a MAPE of less than 1%. The Building Permits model did less well; about 7% off on average. The auto.arima models fitted earlier on are slightly prefered by AIC and BIC, for both models. The Mean Percentage Error (MPE) looks very good for the Building Permits model, at only 0.04%, but the MAPE tells us that MPE is only low because the upwards and downwards errors are quite similar. On average, the model is a lot more than 0.04% off. 
+
+# 9. 12-Step Forecast
+
+```{r}
+# Forecasting 12 steps with each model, plotting it
+plot(forecast(MFG.full_model,h=12),shadecols="oldstyle")
+plot(forecast(PERMIT.full_model,h=12),shadecols="oldstyle")
+```
+
+# 10. Fitting VAR Model
+
+```{r}
+# Combining both timne series into a data frame for VAR
+y <- cbind(MFG.ts,PERMIT.ts)
+y_tot <- data.frame(y)
+# Laoding the library for VAR
+library(vars)
+# Fitting a VAR model
+y_model=VAR(y_tot,p=4)
+# Calling VAR summary statistics
+summary(y_model)
+#Plotting VAR model
+plot(y_model)
+```
+
+With our VAR model fitted, we now see very little trend amongst the residuals for the Manufacturing Index model. Obviously, the 2008 financial crisis and the COVID-19 pandemic are still clearly visible, so perhaps further treatments could be made to the model to better account for those crises. However, the behavior of the residuals for the rest of the time series is precisely what we would desire. The errors for the Building Permits model are again larger, but nicely mean-revert and do not change in volatility across time. For both our series, we see spikes at 12 on the ACF and PACF, indicating seasonal trends occurring every year (every 12 months).
+
+# 11. Impulse Response Functions
+
+```{r}
+# Calculating and Plotting IRF in one step
+plot(irf(y_model))
+```
+
+Our impulse response function plots show that a change in the Manufacturing Index is correlated with significant change in Building Permits for a couple months after the shift in manufacturing.
+
+# 12. Granger Causality Test
+
+```{r}
+# Performing Granger test for causality
+grangertest(MFG.ts ~ PERMIT.ts, order = 4)
+
+grangertest(PERMIT.ts ~ MFG.ts, order = 4)
+```
+
+Our Granger Causality testing determines that Manufacturing Index can predict Building Permits with strong significance. We do not fail to reject the reverse hypothesis, however, so the true relationship might not be as clear.
+
+# 13. VAR 12-Step Forecast
+
+```{r}
+# Creating predictions for VAR model
+var.predict = predict(object=y_model, n.ahead=12)
+# Plotting our created predictions
+plot(var.predict)
+```
+
+```{r}
+# Forecasting using our ARIMA models to compare
+forecast(MFG.full_model,h=12)
+forecast(PERMIT.full_model,h=12)
+# Printing out the VAR forecast for comparison
+var.predict
+```
+
+For the Manufacturing Index forecast, both models reported that the index would hover around 101 for the next 12 months. The season, trend, cycle model varied more in its point forecast, but was slimmer on the forecast interval, while the VAR model had a less varied point forecast but a larger interval.  
+
+For the number of housing permits issued, the models gave quite different forecasts. The VAR model posits that permits are likely to decrease over the next year, while the season, trend, cycle model has it increasing. The likely reason for this disagreement is seen on the original time series plot. The Manufacturing Index had clearly seen a drop in level from the pandemic, but the housing permits series had not yet been affected by the pandemic. Since the VAR model uses information from the Manufacturing time series, it therefore produces what is probably a more realistic forecast. On the other hand, the original model of just housing permits is more optimistic as it does not consider information about the pandemic. The couple down months from the pandemic are likely just considered by the ARIMA model to be a bad season, rather than a once-in-a-lifetime global pandemic.  
+
+Overall, the ARIMA model sees a much quicker recovery, and even growth for housing permits over the next year. However, since we concluded from the Granger Causality testing that Building Permits were affected by the Manufacturing Index with a 2-4 month lag, we should probably expect a drop in Building Permits similar to what the VAR model forecasts, instead of taking the rather optimistic forecast of the ARIMA model.    
+
+# 14. Backtest ARIMA Model
+
+Since we determined above that the manufacturing index may have some predictive power on housing permits, we will forecast and backtest the permit ARIMA model from here on out, to see how it compares to the VAR forecasts.
+
+## (a) 12-Step Recursive
+
+```{r}
+# Loading a library for backtesting
+library(MTS)
+# Backtesting 12 steps ahead and plotting MAPE
+rec.12 <- backtest(PERMIT.full_model, PERMIT.temp, 587, 12)
+plot(rec.12$mabso)
+```
+
+## (b) 1-Step Recursive
+
+```{r}
+# Backtesting 1 steps ahead and plotting MAPE
+rec.1 <- backtest(PERMIT.full_model, PERMIT.temp, 587, 1)
+plot(rec.1$mabso)
+```
+
+## (c) Long/Short Horizons
+
+Based on the backtesting, the model performs best in a one or two-step forecast. As we increase the number of periods forecast, the MAPE increases significantly, as is clear on the 12-step plot of MABSO.
+
+## (d) Moving Window Backtest
+
+```{r}
+# Creating window backtest function
+# Code from TA
+window_backtesting <- function(model, data, orig, h, xreg=NULL,fixed = NULL, inc.mean = TRUE, 
+                               reest = 1){
+  if(!inherits(data,"ts"))stop("data must be a time series object")
+  arma_order <- model$arma
+  regor = arma_order[c(1, 6, 2)]
+  seaor = list(order = arma_order[c(3, 7, 4)],  period = arma_order[5])
+  T = length(data)
+  if (orig > T) 
+    orig = T
+  if (h < 1) 
+    h = 1
+  rmse = numeric(h)
+  mabso = numeric(h)
+  
+  nori = T - orig
+  err = matrix(0, nori, h)
+  fcst = matrix(0, nori, h)
+  jlast = T - 1
+  time_vec <- time(data)
+  ireest <- reest
+  for (n in orig:jlast) {
+    jcnt = n - orig + 1
+    x <- window(data, time_vec[jcnt], time_vec[n]) 
+    if (is.null(xreg)) 
+      pretor = NULL
+    else pretor = xre[jcnt:n]
+    if (ireest == reest) {
+      mm = arima(x, order = regor, seasonal = seaor, xreg = pretor, 
+                 fixed = fixed, include.mean = inc.mean)
+      ireest <- 0
+    }
+    else {
+      ireest <- ireest + 1
+    }
+    if (is.null(xreg)) {
+      nx = NULL
+    }
+    else {
+      nx = xreg[(n + 1):(n + h)]
+    }
+    fore = predict(mm, h, newxreg = nx)
+    kk = min(T, (n + h))
+    nof = kk - n
+    pred = fore$pred[1:nof]
+    obsd = data[(n + 1):kk]
+    err[jcnt, 1:nof] = obsd - pred
+    fcst[jcnt, 1:nof] = pred
+  }
+  for (i in 1:h) {
+    iend = nori - i + 1
+    tmp = err[1:iend, i]
+    mabso[i] = sum(abs(tmp))/iend
+    rmse[i] = sqrt(sum(tmp^2)/iend)
+  }
+  print("RMSE of out-of-sample forecasts")
+  print(rmse)
+  print("Mean absolute error of out-of-sample forecasts")
+  print(mabso)
+  backtest <- list(origin = orig, error = err, forecasts = fcst, 
+                   rmse = rmse, mabso = mabso, reest = reest)
+}
+```
+
+```{r}
+# Window backtesting 12 steps
+window.12 <- window_backtesting(PERMIT.full_model, PERMIT.temp, 588, 12)
+# Window backtesting 1 step
+window.1 <- window_backtesting(PERMIT.full_model, PERMIT.temp, 588, 1)
+# Plotting respective backtest errors
+plot(window.12$mabso)
+plot(window.1$mabso)
+```
+
+## (e) Recursive vs. Moving Window
+
+Unfortunately we could not get the moving window code to not return a 'True/False needed' error, so we cannot make comparisons between the backtesting schemes now.
+
+# Conclusions / Future Work
+
+Our models above do at least a reasonable job at providing good forecasts, however there are definitely areas for improvement. Generally, the errors on the Building Permits model were quite large, nearly to the point where it becomes hard to make any meaningful forecast. Finding a better model fit with more advanced algortihms and filters would benefit the forecasts by reducing the error variation. In terms of the Manufacturing Index model, it performed very well, although it had troubles adjusting to the the 2008 financial crisis and the COVID-19 pandemic. Further work could be done to create a model that considers these massive shocks better than our models do. If that were done, essentially all the error variance originally present in the model would be eliminated, resulting in a robust model good to use for forecasting.
+
+# References
+
+Manufacturing Data:   
+https://fred.stlouisfed.org/series/IPGMFN  
+Building Permit Data:  
+https://fred.stlouisfed.org/series/PERMITNSA  
