@@ -1,0 +1,134 @@
+---
+title: 'Homework #3'
+author: "Dustin Oakes"
+date: "12/1/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading Data and Background Information
+
+```{r}
+civpart <- read.csv("CIVPART.csv")
+attach(civpart)
+```
+
+The data set measures the United States' labor force participation rate from 1948 to 2020, in monthly observations. The Bureau of Labor Statistics defines this measurement as "number of people in the labor force as a percentage of the civilian noninstitutional population. In other words, the participation rate is the percentage of the population that is either working or actively looking for work." The data was accessed through the Federal Reserve Bank of St. Louis online database (FRED). The data should show both trend and seasonality, as long term economic changes affect the overall trend, and cyclical changes occur year after year simulataneuously.
+
+# Time Series Plot
+
+``` {r}
+library(ggplot2)
+library(lubridate)
+library(TSstudio)
+civpart$DATE <- lubridate::ymd(civpart$DATE)
+ts_plot(civpart)
+```
+
+# Covariance Stationarity
+
+Based on the plot of the time series, the data in its original form does not display properties of covariance stationarity, as the mean does not revert and volatility is clearly not constant across the series.
+
+# ACF / PACF Analysis
+
+```{r}
+library(forecast)
+tsdisplay(civpart[,2])
+```
+
+In the ACF analysis, we see that all of the lags exceed the statistically significant bands. Since the autocorrelation drops very gradually, it is not a stationary series. Meanwhile, in the PACF analysis, the first and second lags go outside the Bollinger Bands, while all subsequent ones fit within the boundaries of insignificance.
+
+
+# Fitting a Trend Model
+
+## Linear Model
+
+```{r}
+civts <- ts(civpart, frequency = 12)
+model <- lm(CIVPART ~ DATE, data = civts)
+summary(model)
+```
+
+# Nonlinear Model
+
+```{r}
+model2 <- lm(CIVPART ~ DATE + I(DATE**2), data = civts)
+summary(model2)
+```
+
+```{r}
+par(mfrow=c(1,2))
+pred1 <- predict(model, data=civts)
+plot(civpart)
+lines(pred1 ~ civpart$DATE, col="red")
+pred2 <- predict(model2, data=civts)
+plot(civpart)
+lines(pred2 ~ civpart$DATE, col="blue")
+```
+
+# Plotting Residuals
+
+```{r}
+plot(model)
+plot(model2)
+```
+
+# Histogram of Residuals
+
+```{r}
+par(mfrow=c(1,2))
+hist(model$residuals)
+hist(model2$residuals)
+```
+
+# Diagnostic Statistics
+
+# AIC/BIC Analysis
+
+```{r}
+cat("AIC Linear Model:", AIC(model))
+cat("\n")
+cat("AIC Quadratic Model:", AIC(model2))
+```
+
+```{r}
+cat("BIC Linear Model:", BIC(model))
+cat("\n")
+cat("BIC Quadratic Model:", BIC(model2))
+```
+
+# Forecasting Trend
+
+```{r}
+seq4 <- data.frame(DATE=seq(2021, 2023, by=1/12))
+forecast25 <- forecast(model2, newdata = seq4)
+forecast25
+```
+
+```{r}
+plot(forecast25$mean)
+```
+
+
+```{r}
+seq4 <- data.frame(DATE=seq(2021, 2023, by=1/12))
+seq5 <- seq(2021, 2023, by=1/12)
+pred3 <- predict(model2, newdata=seq4)
+pred3
+plot(civpart)
+lines(pred3 ~ seq5, col="red")
+```
+
+# Creating Seasonal Dummies
+
+```{r}
+plot(forecast(fit3,level=c(50,80)))
+```
+
+
+
+
+
